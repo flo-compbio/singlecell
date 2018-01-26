@@ -1,0 +1,288 @@
+import os
+import hashlib
+import json
+from contextlib import redirect_stdout
+import logging
+
+from pkg_resources import resource_filename
+
+import pandas as pd
+import numpy as np
+from plotly.offline import plot
+
+from singlecell import indrop, qc, util
+from genometools import misc
+from genometools import ensembl
+from genometools.expression import ExpMatrix, ExpGeneTable
+
+
+configfile: '{{ config_file }}'
+
+BARCODE1_FILE = resource_filename(
+        'singlecell', 'data/indrop/gel_barcode1_list.txt')
+BARCODE2_FILE = resource_filename(
+        'singlecell', 'data/indrop/gel_barcode2_list.txt')
+
+#CONFIG_FILE = 'config.yaml'  # replace in template
+
+CONF = config
+
+# read config file
+#CONF, ERRORS = indrop.config.read_config(CONFIG_FILE)
+INPUT_ = CONF['input']
+OUTPUT = CONF['output']
+PARAMS = CONF['parameters']
+# PIPELINE = CONF['pipeline']
+GENES = CONF['genes']
+STAR_PARAMS = CONF['STAR']
+
+RESULTS_DIR = 'results'
+MAPPING_DIR = 'aligned_reads'
+READ_INFO_DIR = 'read_info'
+LOG_DIR = 'logs'
+MISC_DIR = 'misc'
+PLOT_DIR = 'qc_plots'
+PROCESSED_READS_DIR = 'processed_reads'
+
+PROCESSED_READ_FILE = os.path.join(PROCESSED_READS_DIR, 'processed_reads.fastq')
+BARCODE_COUNT_FILE  = os.path.join(RESULTS_DIR, 'barcode_counts.tsv')
+BARCODE_COUNTS_MAPPED_FILE = os.path.join(RESULTS_DIR, 'barcode_counts_mapped.tsv')
+ALIGNMENT_FILE = os.path.join(MAPPING_DIR, 'Aligned.sortedByCoord.out.bam')
+ALIGNMENT_INDEX_FILE = os.path.join(MAPPING_DIR, 'Aligned.sortedByCoord.out.bam.bai')
+CHROMLEN_FILE = os.path.join(RESULTS_DIR, 'chromosome_lengths.tsv')
+GENE_SYMLINK_FILE = os.path.join(RESULTS_DIR, 'genes.tsv')  # must be in same directory as GENE_NAME_FILE
+GENE_NAME_FILE = os.path.join(RESULTS_DIR, 'gene_names.tsv')
+LOG_FILE = os.path.join(RESULTS_DIR, 'log.tsv')
+
+# gene file needs to encode which sets of genes are to be included
+SELECTED_GENE_TYPES = sorted(k for k, v in GENES.items() if v)
+h = hashlib.md5(json.dumps(SELECTED_GENE_TYPES).encode('utf-8')).hexdigest()
+GENE_FILE = os.path.join(RESULTS_DIR, 'genes_%s.tsv' % h)
+
+GENE_EXPRESSION_FILE = os.path.join(
+    RESULTS_DIR, 'gene_expression.mtx')
+TRANSCRIPT_EXPRESSION_FILE = os.path.join(
+    RESULTS_DIR, 'transcript_expression.mtx')
+
+#DENSE_GENE_EXPRESSION_FILE = ''
+#if OUTPUT['generate_dense_expression_matrix']:
+DENSE_GENE_EXPRESSION_FILE = os.path.join(
+    RESULTS_DIR, 'gene_expression.tsv')
+
+MAPPED_COUNT_HISTOGRAM_FILE = \
+        os.path.join(PLOT_DIR, 'mapped_reads_histogram.html')
+TRANSCRIPT_PER_CELL_FILE = \
+        os.path.join(PLOT_DIR, 'transcripts_per_cell.html')
+MITO_RIBO_EXPRESSION_FILE = \
+        os.path.join(PLOT_DIR, 'mito_ribo_expression.html')
+SATURATION_FILE = \
+        os.path.join(PLOT_DIR, 'saturation.html')
+
+def add_log_file_handler(logger, path, mode='w', level=logging.DEBUG):
+    log_fmt = '[%(asctime)s] %(name)s - %(levelname)s: %(message)s'
+    log_datefmt = '%Y-%m-%d %H:%M:%S'
+    
+    handler = logging.FileHandler(path, mode=mode)
+    handler.setLevel(level)
+    formatter = logging.Formatter(log_fmt, log_datefmt)
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return handler
+
+#_LOGGER 
+_LOGGER = misc.get_logger()
+
+rule all:
+    input:
+        ALIGNMENT_FILE,
+        CHROMLEN_FILE,
+        GENE_FILE,
+        GENE_EXPRESSION_FILE,
+        TRANSCRIPT_EXPRESSION_FILE,
+        MAPPED_COUNT_HISTOGRAM_FILE,
+        TRANSCRIPT_PER_CELL_FILE,
+        MITO_RIBO_EXPRESSION_FILE,
+        SATURATION_FILE
+
+
+rule process_reads:
+    input:
+        mrna_read_file = INPUT_['mrna_read_file'],
+        barcode_read_file = INPUT_['barcode_read_file']
+    output:
+        read_file = PROCESSED_READ_FILE,
+        count_file = BARCODE_COUNT_FILE
+    log:
+        os.path.join(LOG_DIR, 'process_reads.txt')
+    run:
+        # make sure logging output ends up in a log file by adding a FileHandler
+        logger = logging.getLogger()
+        handler = add_log_file_handler(logger, log[0])
+
+        # process reads
+        indrop.reads.process_reads(
+            input.barcode_read_file, input.mrna_read_file,
+            BARCODE1_FILE, BARCODE2_FILE,
+            output.read_file, output.count_file,
+            max_reads=PARAMS['max_reads'])
+
+        # remove FileHandler
+        logger.removeHandler(handler)
+
+rule generate_chromlen_file:
+    input:
+        genome_file = INPUT_['genome_file']
+    output:
+        chromlen_file = CHROMLEN_FILE
+    run:
+        chromlen = ensembl.get_chromosome_lengths(input.genome_file)
+        chromlen.to_csv(output.chromlen_file, sep='\t', header=True)
+
+rule generate_gene_file:
+    input:
+        genome_annotation_file = INPUT_['genome_annotation_file']
+    output:
+        gene_file = GENE_FILE,
+        gene_symlink_file = GENE_SYMLINK_FILE,
+        gene_name_file = GENE_NAME_FILE
+    log:
+        os.path.join(LOG_DIR, 'generate_gene_file.txt')
+    run:
+        # make sure logging output ends up in a log file by adding a FileHandler
+        logger = logging.getLogger()
+        handler = add_log_file_handler(logger, log[0])
+        
+        # generate gene file
+        valid_biotypes = [bt for bt, include in GENES.items() if include]
+        df = ensembl.get_genes(INPUT_['genome_annotation_file'], SELECTED_GENE_TYPES)
+        gene_table = ExpGeneTable(df)
+        gene_table.write_tsv(output.gene_file)
+        
+        # generate gene symlink file
+        gene_file_name = os.path.basename(output.gene_file)
+        os.symlink(gene_file_name, output.gene_symlink_file)
+        # the following is a workaround to a limitation of the Python version provided by conda,
+        # making it impossible for it to correctly set the timestamp of a symlink file
+        # see: http://snakemake.readthedocs.io/en/stable/project_info/faq.html#can-the-output-of-a-rule-be-a-symlink
+        shell('touch -h {output.gene_symlink_file}')
+        
+        # generate gene name file
+        gene_names = util.get_readable_gene_identifiers(gene_table)
+        genes = pd.Series(index=gene_table.index, data=gene_names)
+        genes.name = 'Gene name'
+        genes.index.name = 'Gene ID'
+        genes.to_csv(output.gene_name_file, sep='\t', header=True)
+        
+        # remove FileHandler
+        logger.removeHandler(handler)
+        
+rule map_reads_with_star:
+    input:
+        processed_read_file = PROCESSED_READ_FILE
+    output:
+        map_script_file = os.path.join(RESULTS_DIR, 'map_with_star.sh'),
+        map_log_file = os.path.join(RESULTS_DIR, 'mapping_log.txt'),
+        mapping_dir = MAPPING_DIR,
+        alignment_file = ALIGNMENT_FILE,
+        alignment_index_file = ALIGNMENT_INDEX_FILE
+    run:
+        indrop.mapping.map_with_star(
+            input.processed_read_file, INPUT_['star_index_dir'],
+            output.map_script_file, output.map_log_file,
+            output.mapping_dir,
+            num_threads=PARAMS['num_threads'],
+            compressed=False,
+            use_docker=PARAMS['use_docker'],
+            **STAR_PARAMS)
+        
+rule count_mapped_barcode_reads:
+    input:
+        alignment_file = ALIGNMENT_FILE,
+    output:
+        barcode_counts_mapped_file = BARCODE_COUNTS_MAPPED_FILE,
+    run:
+        indrop.barcodes.count_mapped_reads(
+            input.alignment_file,
+            BARCODE1_FILE, BARCODE2_FILE,
+            output.barcode_counts_mapped_file)
+
+rule process_aligned_reads:
+    input:
+        alignment_file = ALIGNMENT_FILE,
+        chromlen_file = CHROMLEN_FILE,
+        gene_file = GENE_FILE,
+        gene_name_file = GENE_NAME_FILE
+    output:
+        touch(os.path.join(MISC_DIR, 'process_aligned_reads_done'))
+    run:
+        indrop.aligned_reads.process_aligned_reads(
+            input.alignment_file, input.chromlen_file,
+            input.gene_file, input.gene_name_file,
+            INPUT_['genome_annotation_file'], READ_INFO_DIR,
+            num_jobs=PARAMS['num_threads'])
+
+rule quantify_expression:
+    input:
+        os.path.join(MISC_DIR, 'process_aligned_reads_done'),
+        barcode_counts_mapped_file = BARCODE_COUNTS_MAPPED_FILE,
+        chromlen_file = CHROMLEN_FILE,
+        gene_file = GENE_FILE,
+    output:
+        gene_expression_file = GENE_EXPRESSION_FILE,
+        transcript_expression_file = TRANSCRIPT_EXPRESSION_FILE,
+        dense_gene_expression_file = DENSE_GENE_EXPRESSION_FILE,
+    run:
+        indrop.expression.quantify_expression(
+            input.barcode_counts_mapped_file,
+            input.chromlen_file,
+            READ_INFO_DIR,
+            input.gene_file, INPUT_['genome_annotation_file'],
+            PARAMS['num_cells'],
+            output.gene_expression_file,
+            output.transcript_expression_file,
+            min_umi_qual=PARAMS['min_umi_qual'],
+            cell_prefix=OUTPUT['cell_prefix'],
+            dense_gene_expression_output_file=output.dense_gene_expression_file)
+
+rule generate_qc_report:
+    input:
+        barcode_counts_mapped_file = BARCODE_COUNTS_MAPPED_FILE,
+        gene_expression_file = GENE_EXPRESSION_FILE,
+        transcript_expression_file = TRANSCRIPT_EXPRESSION_FILE,
+    output:
+        mapped_count_histogram_file = \
+                MAPPED_COUNT_HISTOGRAM_FILE,
+        transcript_per_cell_file = \
+                TRANSCRIPT_PER_CELL_FILE,
+        mito_ribo_expression_file = \
+                MITO_RIBO_EXPRESSION_FILE,
+        saturation_file = \
+                SATURATION_FILE,
+    run:
+        _LOGGER.info('Plotting distribution of mapped reads per barcode...')
+        indrop.barcodes.plot_read_count_distribution(
+            input.barcode_counts_mapped_file, output.mapped_count_histogram_file)
+
+        _LOGGER.info('Plotting distribution of transcripts per cell...')
+        matrix = ExpMatrix.read_sparse(input.gene_expression_file)\
+                .astype(np.float64)
+        fig = qc.plot_cell_transcript_distribution(
+            matrix, OUTPUT['experiment_name'])
+        plot(fig, filename=output.transcript_per_cell_file,
+             show_link=False, auto_open=False)
+
+        _LOGGER.info('Plotting fraction of ribosomal and mitochondrial '
+                     'gene expression...')
+        matrix = ExpMatrix.read_sparse(input.gene_expression_file)\
+                .astype(np.float64)
+        fig = qc.plot_transcriptome_components(
+            matrix, species=PARAMS['species'], name=OUTPUT['experiment_name'],
+            width=950, height=800, font_size=16, font_family='serif')
+        plot(fig, filename=output.mito_ribo_expression_file,
+             show_link=False, auto_open=False)
+
+        _LOGGER.info('Plotting saturation...')
+        matrix = ExpMatrix.read_sparse(input.transcript_expression_file)\
+                .astype(np.float64)
+        fig = qc.plot_saturation(matrix)
+        plot(fig, filename=output.saturation_file, show_link=False, auto_open=False)

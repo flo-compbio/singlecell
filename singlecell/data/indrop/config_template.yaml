@@ -1,0 +1,151 @@
+input:
+  # the FASTQ file containing the barcode sequences (gzip'ed)
+  # (R1 in the orig. protocol)
+  barcode_read_file: /path/to/barcode_reads.fastq.gz
+
+  # the FASTQ file containing the mRNA sequences (gzip'ed)
+  # (R2 in the orig. protocol)
+  mrna_read_file: /path/to/mRNA_reads.fastq.gz
+
+  # the species-specific genome sequence FASTA file (gzip'ed, from Ensembl)
+  # => for human, this file is called something like:
+  #   "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+  genome_file: /path/to/genome.fa.gz
+
+  # the species-specific GTF file (gzip'ed, from Ensembl)
+  # => for human, this file is called something like:
+  #   "Homo_sapiens.GRCh38.88.gtf.gz"
+  genome_annotation_file: /path/to/genome_annotations.gtf.gz
+
+  # the directory containing the STAR index
+  star_index_dir: /path/to/star_index_directory
+
+
+output:
+  # the output directory
+  output_dir: /path/to/pipeline_output_directory
+
+  # whether to allow the output directory to be non-empty
+  allow_nonempty_output_dir: no
+
+  # the experiment name (used in plots etc.)
+  experiment_name: My inDrop run
+  
+  # prefix to prepend to cell names (e.g., "cell_" => "cell_052-162")
+  cell_prefix: cell_
+
+  # whether to produce dense expression matrix (in addition to a sparse matrix)
+  generate_dense_expression_matrix: yes
+
+
+parameters:
+  # the species (used for QC analyses; valid choices are currently: "human",
+  # "mouse", and "zebrafish")
+  species: human
+  
+  # the minimum PHRED quality score allowed in the UMI sequence
+  min_umi_qual: 20
+
+  # the maximum number of reads to process (leave blank for all reads)
+  max_reads:
+
+  # the number of cells to analyze (cells are first ranked by the number of
+  # mapped reads)
+  num_cells: 2000
+  
+  # the number of threads to use for the alignment with STAR
+  num_threads: 16
+
+  # whether to include lincRNA genes in the analysis
+  include_lincRNA_genes: no
+  
+  # whether to use Docker (with Biocontainers) instead of local installations
+  # of STAR and samtools (will be ignored if running on Google Cloud)
+  use_docker: no
+
+genes:
+  # we use json.dumps() to generate an MD5 hash for these values
+  protein_coding: yes  # ~20,000
+  lincRNA: no  # ~7,500 genes
+  snRNA: no  # ~1,900 genes
+  miRNA: no  # ~1,900 genes
+  snoRNA: no  # ~940 genes
+  misc_RNA: no   # 2,200 genes
+  rRNA: no  # ~550 genes
+  antisense: no  # # 5,500 genes
+  processed_transcript: no  # ~530 genes
+  processed_pseudogene: no  # 10,200 genes
+  unprocessed_pseudogene: no  # ~ 2,700 genes
+  transcribed_unprocessed_pseudogene: no  # ~750 genes
+  transcribed_processed_pseudogene: no  # ~450 genes
+
+
+pipeline:
+  # The parameters in this section can be used to only run parts of the
+  # pipeline.
+
+  # Note: If any of the following are set to "yes", you must also allow a
+  # non-empty output directory (see "allow_nonempty_output_dir" in the "output"
+  # section).
+
+  # skip processing the raw reads
+  skip_read_processing: no
+
+  # skip mapping the reads
+  skip_mapping: no
+
+  # skip counting mapped reads for each barcode
+  skip_aligned_read_processing: no
+
+  # skip quantifying gene and transcript expression
+  skip_expression_quantification: no
+
+  # skip generating QC plots
+  skip_qc_plot_generation: no
+
+
+STAR:
+  # This section is optional and can be used to modify some STAR parameters.
+  # Any parameter not specified here (or left blank) will be omitted in the
+  # call to STAR, which will make STAR use its internal default setting for
+  # that parameter. Please refer to the STAR manual for the default parameter
+  # values.
+
+  # The parameter names used here are identical to those used by STAR, except
+  # that they are missing the leading two dashes ("--"). For example, to
+  # set STAR's "--seedSearchStartLmax" parameter to 25, use the following:
+  # 
+  # seedSearchStartLmax: 25
+
+  seedSearchStartLmax:
+  outFilterMismatchNmax:
+  outFilterMultimapNmax:
+  alignSJDBoverhangMin:
+
+
+gcloud:
+  # This section is ignored when not running on Google Cloud.
+
+  # the secrets file (in JSON format) for authentication with Google Cloud
+  key_file: /path/to/keyfile.json
+
+  # the project id
+  project_id: bereaved-beaver-123456
+
+  # the zone to be used
+  zone: us-east1-c
+
+  # the Google Storage location where startup scripts will be uploaded to
+  script_dir: gs://my-bucket/my-script-dir
+
+  # the instance machine type to use (recommended: n1-highmem-8)
+  machine_type: n1-highmem-8
+
+  # the disk size to use (recommended: 256 GB)
+  disk_size_gb: 256
+
+  # where to upload the singlecell package to
+  singlecell_package_file: gs://my-bucket/prefix/singlecell.tar.gz
+
+  # where to upload the config file to
+  pipeline_config_dir: gs://my-bucket/prefix/temp

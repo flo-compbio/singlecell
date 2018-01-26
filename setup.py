@@ -3,7 +3,7 @@
 import os
 import io
 
-from setuptools import setup, find_packages, Command
+from setuptools import setup, find_packages, Command, Extension
 from os import path
 
 root = 'singlecell'
@@ -11,23 +11,52 @@ name = 'singlecell'
 version = '0.1.0'
 
 here = path.abspath(path.dirname(__file__))
-description = 'SingleCell: A Python Package for Processing Single-Cell RNA-Seq Data.'
+description = ('SingleCell: A Python/Cython Package for Processing '
+               'Single-Cell RNA-Seq Data.')
 
 install_requires = [
-    #'six>=1.5.2, <2',
-    #'future>=0.15.2, <1',
-    #'requests>=2.9.1, <3',
-    #'unicodecsv>=0.14.1, <1',
-    #'xmltodict>=0.10.1, <1',
-    #'ftputil>=3.3.1, <4',
-    #'numpy>=1.8, <2',
-    #'pandas>=0.18, <1',
-    #'xlmhg>=2.4.9, <3',
-    #'google-cloud-storage>=0.23.1',
-    #'oauth2client>=4, <5',
-    #'jinja2>=2.9.5, <3',
-    #'biopython>=1.69'
+    'genometools>=0.3.4, <1',
+    'pysam>=0.11.1, <1',
+    'jinja2>=2.9.5, <3',
+    'pyyaml>=3.11, <4',
+    'pandas>=0.20.2, <1',  # for SparseDataFrame support
+    'cython>=0.25.2, <1',
+    'HTSeq>=0.8.0, <1',
+    'numpy>=1.7.0',
+    'snakemake>=4.3.0, <5'
 ]
+
+ext_modules = []
+cmdclass = {}
+
+
+try:
+    import numpy as np
+    from Cython.Distutils import build_ext
+    from Cython.Compiler import Options as CythonOptions
+except ImportError:
+    pass
+else:
+    # only enable Cython line tracing if we're installing in Travis-CI!
+    macros = []
+    # tell setuptools to build the Cython extension
+    ext_modules.append(
+        Extension(root + '.indrop.reads', [root + '/indrop/reads.pyx'],
+                include_dirs=[np.get_include()],
+                define_macros=macros))
+    ext_modules.append(
+        Extension(root + '.indrop.barcodes_cython',
+                [root + '/indrop/barcodes_cython.pyx'],
+                include_dirs=[np.get_include()],
+                define_macros=macros))
+    ext_modules.append(
+        Extension(root + '.indrop.expression',
+                [root + '/indrop/expression.pyx'],
+                include_dirs=[np.get_include()],
+                define_macros=macros))
+
+    cmdclass['build_ext'] = build_ext
+
 
 # do not require installation if built by ReadTheDocs
 # (we mock these modules in docs/source/conf.py)
@@ -68,6 +97,7 @@ class CleanCommand(Command):
             raise OSError(error_msg)
         else:
             os.system('rm -rf ./dist ./build ./*.egg-info ')
+cmdclass['clean']  = CleanCommand
 
 setup(
     name=name,
@@ -83,7 +113,7 @@ setup(
     author='Florian Wagner',
     author_email='florian.wagner@nyu.edu',
 
-    license='GPLv3',
+    license='proprietary',
 
     # See https://pypi.python.org/pypi?%3Aaction=list_classifiers
     classifiers=[
@@ -98,7 +128,7 @@ setup(
         'Programming Language :: Python :: 3.5',
     ],
 
-    keywords='singel-cell gene expression pipeline processing',
+    keywords='single-cell gene expression pipeline processing',
 
     # packages=find_packages(exclude=['contrib', 'docs', 'tests*']),
     packages=find_packages(exclude=['docs', 'tests*']),
@@ -118,26 +148,51 @@ setup(
             'mock',
         ],
         'tests': [
-            'pytest>=2.8.5, <4',
-            'pytest-cov>=2.2.1, <3',
+            'pytest>=3.1.2, <4',
+            'pytest-cov>=2.5.1, <3',
         ],
     },
 
     # data
     # package_data={'genometools': ['data/RdBu_r_colormap.tsv']},
     package_data={
+        'singlecell': [
+            'data/*/*',
+            'data/templates/*/*',
+            'indrop/reads.pyx',
+        ]
     },
-
     # data outside the package
     # data_files=[('my_data', ['data/data_file'])],
 
     entry_points={
         'console_scripts': [
+
+            # inDrop scripts
+            ('indrop_generate_star_index.py = '
+             'singlecell.indrop.cli.generate_star_index:main'),
+            ('indrop_create_config_file.py = '
+             'singlecell.indrop.cli.create_config_file:main'),
+            ('indrop_pipeline.py = '
+             'singlecell.indrop.cli.pipeline:main'),
+            ('indrop_check_pipeline.py = '
+             'singlecell.indrop.cli.check_pipeline:main'),             
+            #('indrop_process_reads.py = '
+            # 'singlecell.indrop.cli.process_reads:main'),
+            #('indrop_map_with_star.py = '
+            # 'singlecell.indrop.cli.map_with_star:main'),
+            #('indrop_count_barcodes_mapped.py = '
+            # 'singlecell.indrop.cli.count_barcodes_mapped:main'),
+            #('indrop_quantify_gene_expression.py ='
+            # 'singlecell.indrop.cli.quantify_gene_expression:main'),
+            #('indrop_quantify_transcript_expression.py ='
+            # 'singlecell.indrop.cli.quantify_transcript_expression:main'),
+            #('indrop_count_barcodes_transcriptomic.py = '
+            # 'singlecell.indrop.cli.count_barcodes_transcriptomic:main'), 
         ],
     },
 
-    cmdclass={
-        'clean': CleanCommand,
-    },
+    ext_modules=ext_modules,
+    cmdclass=cmdclass,
 
 )
